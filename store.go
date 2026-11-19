@@ -13,10 +13,16 @@ const viewerEmail = "adaiversen@example.invalid"
 const baseEpoch = int64(1700000000)
 
 type App struct {
-	mu    sync.Mutex
+	mu    sync.RWMutex
 	repos map[string]*Repo
 	token string
 	clock int64
+
+	// fetchCache memoizes whole fetch responses. A fetch response is a pure
+	// function of its args over immutable, content-addressed objects, so the
+	// fifty concurrent shallow clones of one tip share a single computed pack.
+	fetchCache  sync.Map
+	fetchCacheN int64
 	idSeq int
 }
 

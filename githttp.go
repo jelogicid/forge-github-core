@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync/atomic"
 )
 
 const gitAgent = "agent=makefun-forge/1.0"
@@ -247,6 +248,10 @@ func (a *App) lsRefs(repo *Repo, args []string) []byte {
 }
 
 func (a *App) fetchPack(repo *Repo, args []string) []byte {
+	cacheKey := repo.Owner + "/" + repo.Name + "\x00" + strings.Join(args, "\x00")
+	if v, ok := a.fetchCache.Load(cacheKey); ok {
+		return v.([]byte)
+	}
 	var wants, haves, shallows []string
 	depth := 0
 	for _, arg := range args {
@@ -284,6 +289,11 @@ func (a *App) fetchPack(repo *Repo, args []string) []byte {
 	out = append(out, pktText("packfile\n")...)
 	out = append(out, sidebandChunk(pack, 1)...)
 	out = append(out, pktFlush...)
+	if atomic.AddInt64(&a.fetchCacheN, 1) > 8192 {
+		a.fetchCache.Range(func(k, _ any) bool { a.fetchCache.Delete(k); return true })
+		atomic.StoreInt64(&a.fetchCacheN, 0)
+	}
+	a.fetchCache.Store(cacheKey, out)
 	return out
 }
 

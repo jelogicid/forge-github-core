@@ -8,14 +8,39 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 )
 
-var reqIDSeq int
+var reqIDSeq int64
+
+// readOnlyRequest reports whether a request only reads the store, so several
+// of them (the concurrent shallow clones, the keep-alive issue reads) can run
+// in parallel under the read lock while writers stay exclusive.
+func readOnlyRequest(r *http.Request, path string) bool {
+	if path == "/healthz" {
+		return true
+	}
+	if strings.HasPrefix(path, "/api/v3") {
+		return r.Method == "GET" || r.Method == "HEAD"
+	}
+	if strings.HasSuffix(path, ".git") || strings.Contains(path, ".git/") {
+		if r.Method == "GET" {
+			return true
+		}
+		return strings.Contains(path, "git-upload-pack")
+	}
+	return false
+}
 
 func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
 	path := r.URL.Path
+	if readOnlyRequest(r, path) {
+		a.mu.RLock()
+		defer a.mu.RUnlock()
+	} else {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+	}
 
 	if path == "/healthz" {
 		writeJSON(w, 200, map[string]any{"ok": true})
@@ -41,10 +66,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
-	reqIDSeq++
+	id := atomic.AddInt64(&reqIDSeq, 1)
 	data, _ := json.Marshal(body)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Header().Set("X-GitHub-Request-Id", fmt.Sprintf("REQ:%d", reqIDSeq))
+	w.Header().Set("X-GitHub-Request-Id", fmt.Sprintf("REQ:%d", id))
 	w.WriteHeader(status)
 	w.Write(data)
 }
